@@ -7,6 +7,7 @@ import { systemRouter } from "./_core/systemRouter";
 import { adminProcedure, protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import { getDb, getWallet, getRecentWalletTransactions, getUserApiKeys, getUserWebhooks, getCatalog, getPublicStats, getUserActivations, countUserActivations, recordActivationEvent, ensureCatalog } from "./db";
 import { apiKeys, activations, deposits, refunds, services, suppliers, walletTransactions, wallets, webhookDeliveries, webhookEndpoints } from "../drizzle/schema";
+import { encryptSecret, hasSupplierEncryptionKey } from "./_core/secrets";
 
 const jsonOk = <T>(data: T, message = "Success") => ({ success: true, data, message, error: null });
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -83,6 +84,40 @@ export const appRouter = router({
   }),
   admin: router({
     overview: adminProcedure.query(async () => jsonOk({ router: "SupplierRouter active", supportedStates: ["CREATED", "RESERVED", "PENDING", "OTP_RECEIVED", "SUCCESS", "CANCELLED", "TIMEOUT", "REFUND"], pricing: "Database-driven", ledger: "Enabled" })),
+    suppliers: adminProcedure.query(async () => {
+      const db = await getDb(); if (!db) throw new Error("Database unavailable");
+      const rows = await db.select().from(suppliers).orderBy(desc(suppliers.createdAt));
+      return jsonOk(rows.map(({ apiKeyEncrypted, ...row }) => ({ ...row, credentialConfigured: Boolean(apiKeyEncrypted) })));
+    }),
+    services: adminProcedure.query(async () => {
+      const db = await getDb(); if (!db) throw new Error("Database unavailable");
+      const rows = await db.select().from(services).orderBy(desc(services.updatedAt)).limit(250);
+      return jsonOk(rows);
+    }),
+    monitoring: adminProcedure.query(async () => {
+      const db = await getDb(); if (!db) throw new Error("Database unavailable");
+      const [activationCounts, pendingDeposits, deliveryCounts, supplierCounts] = await Promise.all([
+        db.select({ state: activations.state, count: sql<number>`count(*)` }).from(activations).groupBy(activations.state),
+        db.select({ count: sql<number>`count(*)` }).from(deposits).where(eq(deposits.status, "pending")),
+        db.select({ status: webhookDeliveries.status, count: sql<number>`count(*)` }).from(webhookDeliveries).groupBy(webhookDeliveries.status),
+        db.select({ status: suppliers.status, count: sql<number>`count(*)` }).from(suppliers).groupBy(suppliers.status),
+      ]);
+      return jsonOk({ activations: activationCounts.map(row => ({ state: row.state, count: Number(row.count) })), pendingDeposits: Number(pendingDeposits[0]?.count ?? 0), webhookDeliveries: deliveryCounts.map(row => ({ status: row.status, count: Number(row.count) })), suppliers: supplierCounts.map(row => ({ status: row.status, count: Number(row.count) })), paymentWebhookConfigured: Boolean(process.env.QRIS_WEBHOOK_SECRET), supplierEncryptionConfigured: hasSupplierEncryptionKey() });
+    }),
+    saveSupplier: adminProcedure.input(z.object({ id: z.number().int().positive().optional(), name: z.string().min(2).max(100), apiUrl: z.string().url().max(255).optional().or(z.literal("")), apiKey: z.string().max(1000).optional(), priority: z.number().int().min(0).max(10000), timeoutMs: z.number().int().min(500).max(120000), status: z.enum(["active", "inactive", "degraded"]) })).mutation(async ({ input }) => {
+      const db = await getDb(); if (!db) throw new Error("Database unavailable");
+      if (input.apiKey && !hasSupplierEncryptionKey()) throw new Error("Configure SUPPLIER_CREDENTIAL_ENCRYPTION_KEY before saving supplier credentials");
+      const values = { name: input.name, apiUrl: input.apiUrl || null, priority: input.priority, timeoutMs: input.timeoutMs, status: input.status, ...(input.apiKey ? { apiKeyEncrypted: encryptSecret(input.apiKey) } : {}) };
+      if (input.id) await db.update(suppliers).set(values).where(eq(suppliers.id, input.id));
+      else await db.insert(suppliers).values({ ...values, successRateBps: 0, avgResponseMs: 0 });
+      return jsonOk({ saved: true }, "Supplier saved");
+    }),
+    savePricing: adminProcedure.input(z.object({ id: z.number().int().positive(), supplierPriceMinor: z.number().int().min(0).max(100000000), salePriceMinor: z.number().int().min(0).max(100000000), resellerPriceMinor: z.number().int().min(0).max(100000000), vipPriceMinor: z.number().int().min(0).max(100000000), apiPriceMinor: z.number().int().min(0).max(100000000) })).mutation(async ({ input }) => {
+      const db = await getDb(); if (!db) throw new Error("Database unavailable");
+      const { id, ...price } = input;
+      await db.update(services).set(price).where(eq(services.id, id));
+      return jsonOk({ saved: true }, "Pricing saved");
+    }),
   }),
 });
 export type AppRouter = typeof appRouter;
