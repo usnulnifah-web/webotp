@@ -2,7 +2,8 @@ import type { Express, Request, Response } from "express";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { createHash, randomBytes } from "node:crypto";
 import { getDb, getCatalog, getWallet, recordActivationEvent } from "./db";
-import { apiKeys, activations, services, wallets, walletTransactions, refunds } from "../drizzle/schema";
+import { apiKeys, activations, services, wallets, walletTransactions, refunds, deposits } from "../drizzle/schema";
+import { verifyHmacSha256 } from "./_core/secrets";
 
 const reply = (res: Response, status: number, data: unknown, message = "Success", error: unknown = null) => res.status(status).json({ success: status < 400, data: status < 400 ? data : null, message, error });
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -16,6 +17,47 @@ async function authenticate(req: Request, res: Response) {
 }
 
 export function registerRestApi(app: Express) {
+  app.post("/api/webhooks/payments/qris", async (req, res) => {
+    const secret = process.env.QRIS_WEBHOOK_SECRET;
+    if (!secret) return reply(res, 503, null, "QRIS webhook is not configured", { code: "PAYMENT_WEBHOOK_NOT_CONFIGURED" });
+    const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+    if (!rawBody || !verifyHmacSha256(rawBody, req.header("x-payment-signature"), secret)) return reply(res, 401, null, "Invalid payment signature", { code: "INVALID_SIGNATURE" });
+    const payload = req.body ?? {};
+    const eventId = typeof payload.event_id === "string" ? payload.event_id : "";
+    const reference = typeof payload.reference === "string" ? payload.reference : "";
+    const amountMinor = Number(payload.amountMinor);
+    if (!eventId || eventId.length > 120 || !reference || reference.length > 80 || payload.status !== "paid" || !Number.isSafeInteger(amountMinor) || amountMinor <= 0) return reply(res, 400, null, "Expected event_id, reference, status=paid, and positive integer amountMinor", { code: "INVALID_PAYMENT_EVENT" });
+    const db = await getDb(); if (!db) return reply(res, 503, null, "Database unavailable", { code: "DATABASE_UNAVAILABLE" });
+    try {
+      const result = await db.transaction(async tx => {
+        const deposit = (await tx.select().from(deposits).where(eq(deposits.reference, reference)).limit(1))[0];
+        if (!deposit) throw new Error("DEPOSIT_NOT_FOUND");
+        if (deposit.amountMinor !== amountMinor) throw new Error("AMOUNT_MISMATCH");
+        if (deposit.status === "paid") return { duplicate: true, reference };
+        if (deposit.status !== "pending") throw new Error("DEPOSIT_NOT_PENDING");
+        let wallet = (await tx.select().from(wallets).where(eq(wallets.userId, deposit.userId)).limit(1))[0];
+        if (!wallet) {
+          await tx.insert(wallets).values({ userId: deposit.userId });
+          wallet = (await tx.select().from(wallets).where(eq(wallets.userId, deposit.userId)).limit(1))[0];
+        }
+        if (!wallet) throw new Error("WALLET_NOT_FOUND");
+        const markedPaid = await tx.update(deposits).set({ status: "paid", paidAt: new Date() }).where(and(eq(deposits.id, deposit.id), eq(deposits.status, "pending"), eq(deposits.amountMinor, amountMinor)));
+        if ((markedPaid as any).affectedRows !== 1) throw new Error("DEPOSIT_ALREADY_PROCESSED");
+        const credit = deposit.amountMinor + deposit.bonusMinor;
+        const balanceAfterMinor = wallet.balanceMinor + credit;
+        const walletUpdate = await tx.update(wallets).set({ balanceMinor: balanceAfterMinor, version: sql`${wallets.version} + 1` }).where(and(eq(wallets.id, wallet.id), eq(wallets.version, wallet.version)));
+        if ((walletUpdate as any).affectedRows !== 1) throw new Error("WALLET_CHANGED");
+        await tx.insert(walletTransactions).values({ walletId: wallet.id, userId: deposit.userId, reference: `pay_${deposit.reference}`, idempotencyKey: `deposit_${deposit.reference}`, type: "deposit", direction: "credit", amountMinor: credit, balanceAfterMinor, description: `QRIS deposit ${deposit.reference}`, metadata: JSON.stringify({ provider: deposit.provider, providerEventId: eventId }) });
+        return { duplicate: false, reference, creditedMinor: credit, balanceAfterMinor };
+      });
+      return reply(res, 200, result, result.duplicate ? "Payment event already processed" : "Payment confirmed");
+    } catch (error) {
+      const code = String(error).replace("Error: ", "");
+      const mapped: Record<string, [number, string]> = { DEPOSIT_NOT_FOUND: [404, "Deposit not found"], AMOUNT_MISMATCH: [400, "Payment amount does not match deposit"], DEPOSIT_NOT_PENDING: [409, "Deposit is not pending"], DEPOSIT_ALREADY_PROCESSED: [409, "Deposit is already being processed"], WALLET_NOT_FOUND: [500, "Wallet could not be created"], WALLET_CHANGED: [409, "Wallet changed; provider may retry safely"] };
+      const [status, message] = mapped[code] ?? [500, "Payment processing failed"];
+      return reply(res, status, null, message, { code });
+    }
+  });
   app.get("/api/v1/services", async (_req, res) => reply(res, 200, await getCatalog()));
   app.get("/api/v1/countries", async (_req, res) => { const catalog = await getCatalog(); reply(res, 200, Array.from(new Map(catalog.map(item => [item.countryCode, { code: item.countryCode, name: item.countryName }])).values())); });
   app.get("/api/v1/prices", async (_req, res) => reply(res, 200, (await getCatalog()).map(item => ({ service: item.code, country: item.countryCode, price: item.apiPriceMinor }))));

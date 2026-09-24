@@ -42,7 +42,9 @@ export function getSessionCookieOptions(
   return {
     httpOnly: true,
     path: "/",
-    sameSite: "none",
+    // Same-origin member APIs do not need cross-site cookies; Lax still allows
+    // top-level GET redirects used by any legacy OAuth callback.
+    sameSite: "lax",
     secure: isSecureRequest(req),
   };
 }
