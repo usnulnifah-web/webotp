@@ -5,38 +5,20 @@ import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import Home from "./pages/Home";
+import { AdminLogin, AdminSetup } from "./pages/AdminAccess";
+import { trpc } from "./lib/trpc";
 
 function Router() {
-  // make sure to consider if you need authentication for certain routes
-  return (
-    <Switch>
-      <Route path={"/"} component={Home} />
-      <Route path={"/404"} component={NotFound} />
-      {/* Final fallback route */}
-      <Route component={NotFound} />
-    </Switch>
-  );
+  const setup = trpc.setup.status.useQuery(undefined, { retry: false, refetchOnWindowFocus: false });
+  if (setup.isLoading) return <div className="flex min-h-screen items-center justify-center bg-[#061527]"><div className="loading-ring" /></div>;
+  if (setup.error) return <div className="flex min-h-screen items-center justify-center bg-[#061527] p-5 text-center text-white"><div><h1 className="text-xl font-black">Database belum siap</h1><p className="mt-2 text-sm text-slate-300">Periksa DATABASE_URL lalu jalankan migrasi database.</p></div></div>;
+  if (!setup.data?.data.configured) return <AdminSetup />;
+  if (!setup.data?.data.authenticated) return <AdminLogin />;
+  return <Switch><Route path="/" component={Home} /><Route path="/404" component={NotFound} /><Route component={NotFound} /></Switch>;
 }
 
-// NOTE: About Theme
-// - First choose a default theme according to your design style (dark or light bg), than change color palette in index.css
-//   to keep consistent foreground/background color across components
-// - If you want to make theme switchable, pass `switchable` ThemeProvider and use `useTheme` hook
-
 function App() {
-  return (
-    <ErrorBoundary>
-      <ThemeProvider
-        defaultTheme="light"
-        // switchable
-      >
-        <TooltipProvider>
-          <Toaster />
-          <Router />
-        </TooltipProvider>
-      </ThemeProvider>
-    </ErrorBoundary>
-  );
+  return <ErrorBoundary><ThemeProvider defaultTheme="light"><TooltipProvider><Toaster /><Router /></TooltipProvider></ThemeProvider></ErrorBoundary>;
 }
 
 export default App;

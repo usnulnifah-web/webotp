@@ -73,6 +73,12 @@ pnpm db:push
 pnpm dev
 ```
 
+### First-run admin setup
+
+After the database migration, open the web address. The application first shows a mandatory **Create admin account** screen. Until the first admin account exists, the application workspace remains locked. The admin password is exactly **six numeric digits**; it is salted and stored as a scrypt hash, never as plain text. After setup, the browser is signed in automatically. On later visits, the admin login screen is shown until a valid local admin session is established.
+
+The original OAuth session flow and API-key authentication remain available for existing integrations. The local admin session is an additional installation gate for the web interface.
+
 Checks:
 
 ```bash

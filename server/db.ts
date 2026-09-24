@@ -1,7 +1,8 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, gt, sql } from "drizzle-orm";
+import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { drizzle } from "drizzle-orm/mysql2";
 import { ENV } from "./_core/env";
-import { users, wallets, walletTransactions, apiKeys, webhookEndpoints, services, suppliers, activations, activationEvents, type InsertUser } from "../drizzle/schema";
+import { adminAccounts, adminSessions, users, wallets, walletTransactions, apiKeys, webhookEndpoints, services, suppliers, activations, activationEvents, type InsertUser } from "../drizzle/schema";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 export async function getDb() {
@@ -22,6 +23,59 @@ export async function upsertUser(user: InsertUser): Promise<void> {
   await db.insert(users).values(values).onDuplicateKeyUpdate({ set: updateSet });
 }
 export async function getUserByOpenId(openId: string) { const db = await getDb(); if (!db) return undefined; const r = await db.select().from(users).where(eq(users.openId, openId)).limit(1); return r[0]; }
+
+const ADMIN_OPEN_ID = "local-admin";
+const hashAdminPassword = (password: string) => {
+  const salt = randomBytes(16).toString("hex");
+  return `${salt}:${scryptSync(password, salt, 32).toString("hex")}`;
+};
+const verifyAdminPassword = (password: string, stored: string) => {
+  const [salt, digest] = stored.split(":");
+  if (!salt || !digest) return false;
+  try { return timingSafeEqual(Buffer.from(digest, "hex"), scryptSync(password, salt, 32)); } catch { return false; }
+};
+const hashAdminSession = (token: string) => createHash("sha256").update(token).digest("hex");
+
+export async function hasAdminAccount() {
+  const db = await getDb(); if (!db) return false;
+  const row = (await db.select({ id: adminAccounts.id }).from(adminAccounts).limit(1))[0];
+  return Boolean(row);
+}
+
+export async function createAdminAccount(username: string, password: string) {
+  const db = await getDb(); if (!db) throw new Error("Database unavailable");
+  if (await hasAdminAccount()) throw new Error("Admin account already exists");
+  const existing = await db.select().from(users).where(eq(users.openId, ADMIN_OPEN_ID)).limit(1);
+  let userId = existing[0]?.id;
+  if (!userId) {
+    const inserted = await db.insert(users).values({ openId: ADMIN_OPEN_ID, name: username, loginMethod: "local", role: "admin" });
+    userId = Number((inserted as any).insertId);
+  } else {
+    await db.update(users).set({ name: username, role: "admin", loginMethod: "local" }).where(eq(users.id, userId));
+  }
+  await db.insert(adminAccounts).values({ userId, username, passwordHash: hashAdminPassword(password) });
+  return { userId, username };
+}
+
+export async function loginAdmin(username: string, password: string) {
+  const db = await getDb(); if (!db) throw new Error("Database unavailable");
+  const account = (await db.select().from(adminAccounts).where(eq(adminAccounts.username, username)).limit(1))[0];
+  if (!account || !verifyAdminPassword(password, account.passwordHash)) return null;
+  const token = randomBytes(32).toString("base64url");
+  await db.insert(adminSessions).values({ userId: account.userId, tokenHash: hashAdminSession(token), expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 24 * 30) });
+  return { token, userId: account.userId, username: account.username };
+}
+
+export async function getAdminBySessionToken(token: string | undefined) {
+  const db = await getDb(); if (!db || !token) return null;
+  const row = (await db.select({ user: users, account: adminAccounts }).from(adminSessions).innerJoin(users, eq(adminSessions.userId, users.id)).innerJoin(adminAccounts, eq(adminAccounts.userId, users.id)).where(and(eq(adminSessions.tokenHash, hashAdminSession(token)), gt(adminSessions.expiresAt, new Date()))).limit(1))[0];
+  return row?.user?.role === "admin" ? row.user : null;
+}
+
+export async function deleteAdminSession(token: string | undefined) {
+  const db = await getDb(); if (!db || !token) return;
+  await db.delete(adminSessions).where(eq(adminSessions.tokenHash, hashAdminSession(token)));
+}
 
 export async function ensureWallet(userId: number) {
   const db = await getDb(); if (!db) return null;

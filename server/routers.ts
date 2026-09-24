@@ -1,11 +1,12 @@
 import { randomBytes, createHash } from "node:crypto";
+import { parse as parseCookieHeader } from "cookie";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { adminProcedure, protectedProcedure, publicProcedure, router } from "./_core/trpc";
-import { getDb, getWallet, getRecentWalletTransactions, getUserApiKeys, getUserWebhooks, getCatalog, getPublicStats, getUserActivations, countUserActivations, recordActivationEvent, ensureCatalog } from "./db";
+import { getDb, getWallet, getRecentWalletTransactions, getUserApiKeys, getUserWebhooks, getCatalog, getPublicStats, getUserActivations, countUserActivations, recordActivationEvent, ensureCatalog, hasAdminAccount, createAdminAccount, loginAdmin, deleteAdminSession } from "./db";
 import { apiKeys, activations, deposits, refunds, services, suppliers, walletTransactions, wallets, webhookDeliveries, webhookEndpoints } from "../drizzle/schema";
 
 const jsonOk = <T>(data: T, message = "Success") => ({ success: true, data, message, error: null });
@@ -16,7 +17,25 @@ export const appRouter = router({
   system: systemRouter,
   auth: router({
     me: publicProcedure.query(opts => opts.ctx.user),
-    logout: publicProcedure.mutation(({ ctx }) => { const cookieOptions = getSessionCookieOptions(ctx.req); ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 }); return { success: true } as const; }),
+    logout: publicProcedure.mutation(async ({ ctx }) => { const cookieOptions = getSessionCookieOptions(ctx.req); const token = parseCookieHeader(ctx.req.headers.cookie ?? "")[COOKIE_NAME]; await deleteAdminSession(token); ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 }); return { success: true } as const; }),
+  }),
+  setup: router({
+    status: publicProcedure.query(async ({ ctx }) => jsonOk({ configured: await hasAdminAccount(), authenticated: Boolean(ctx.user), user: ctx.user ? { id: ctx.user.id, name: ctx.user.name, role: ctx.user.role } : null })),
+    createAdmin: publicProcedure.input(z.object({ username: z.string().trim().min(3).max(80).regex(/^[a-zA-Z0-9_.-]+$/), password: z.string().regex(/^\d{6}$/), confirmPassword: z.string() })).mutation(async ({ ctx, input }) => {
+      if (input.password !== input.confirmPassword) throw new Error("Passwords do not match");
+      const account = await createAdminAccount(input.username, input.password);
+      const session = await loginAdmin(input.username, input.password);
+      if (!session) throw new Error("Could not start admin session");
+      ctx.res.cookie(COOKIE_NAME, session.token, { ...getSessionCookieOptions(ctx.req), maxAge: 1000 * 60 * 60 * 24 * 30 });
+      return jsonOk({ username: account.username }, "Admin account created");
+    }),
+    login: publicProcedure.input(z.object({ username: z.string().trim().min(1).max(80), password: z.string().regex(/^\d{6}$/) })).mutation(async ({ ctx, input }) => {
+      if (!(await hasAdminAccount())) throw new Error("Admin setup is required");
+      const session = await loginAdmin(input.username, input.password);
+      if (!session) throw new Error("Invalid username or 6-digit password");
+      ctx.res.cookie(COOKIE_NAME, session.token, { ...getSessionCookieOptions(ctx.req), maxAge: 1000 * 60 * 60 * 24 * 30 });
+      return jsonOk({ username: session.username }, "Login successful");
+    }),
   }),
   public: router({
     stats: publicProcedure.query(async () => jsonOk(await getPublicStats())),

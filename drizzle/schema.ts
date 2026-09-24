@@ -12,6 +12,23 @@ export const users = mysqlTable("users", {
   lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
 });
 
+export const adminAccounts = mysqlTable("admin_accounts", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull().unique(),
+  username: varchar("username", { length: 80 }).notNull().unique(),
+  passwordHash: varchar("passwordHash", { length: 255 }).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export const adminSessions = mysqlTable("admin_sessions", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  tokenHash: varchar("tokenHash", { length: 64 }).notNull().unique(),
+  expiresAt: timestamp("expiresAt").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
 export const wallets = mysqlTable("wallets", {
   id: int("id").autoincrement().primaryKey(),
   userId: int("userId").notNull().unique(),
@@ -165,3 +182,5 @@ export const webhookDeliveries = mysqlTable("webhook_deliveries", {
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 export type ActivationState = typeof activations.$inferSelect.state;
+export type AdminAccount = typeof adminAccounts.$inferSelect;
+export type AdminSession = typeof adminSessions.$inferSelect;
