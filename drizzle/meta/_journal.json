@@ -15,6 +15,13 @@
       "when": 1790273956405,
       "tag": "0001_slow_lizard",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1790278983190,
+      "tag": "0002_admin_setup",
+      "breakpoints": true
     }
   ]
 }
