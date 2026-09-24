@@ -5,11 +5,25 @@ export const users = mysqlTable("users", {
   openId: varchar("openId", { length: 64 }).notNull().unique(),
   name: text("name"),
   email: varchar("email", { length: 320 }),
+  localEmail: varchar("localEmail", { length: 320 }).unique(),
+  passwordHash: varchar("passwordHash", { length: 255 }),
+  pendingPasswordHash: varchar("pendingPasswordHash", { length: 255 }),
+  pendingName: varchar("pendingName", { length: 160 }),
+  emailVerifiedAt: timestamp("emailVerifiedAt"),
+  emailOtpHash: varchar("emailOtpHash", { length: 64 }),
+  emailOtpExpiresAt: timestamp("emailOtpExpiresAt"),
+  emailOtpAttempts: int("emailOtpAttempts").default(0).notNull(),
   loginMethod: varchar("loginMethod", { length: 64 }),
   role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
+});
+
+export const authRateLimits = mysqlTable("auth_rate_limits", {
+  key: varchar("key", { length: 64 }).primaryKey(),
+  attempts: int("attempts").default(0).notNull(),
+  windowStartedAt: timestamp("windowStartedAt").defaultNow().notNull(),
 });
 
 export const wallets = mysqlTable("wallets", {

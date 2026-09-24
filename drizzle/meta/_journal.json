@@ -15,6 +15,13 @@
       "when": 1790273956405,
       "tag": "0001_slow_lizard",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1790276973366,
+      "tag": "0002_local_email_otp_auth",
+      "breakpoints": true
     }
   ]
 }

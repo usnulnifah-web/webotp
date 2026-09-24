@@ -8,15 +8,21 @@ import { adminProcedure, protectedProcedure, publicProcedure, router } from "./_
 import { getDb, getWallet, getRecentWalletTransactions, getUserApiKeys, getUserWebhooks, getCatalog, getPublicStats, getUserActivations, countUserActivations, recordActivationEvent, ensureCatalog } from "./db";
 import { apiKeys, activations, deposits, refunds, services, suppliers, walletTransactions, wallets, webhookDeliveries, webhookEndpoints } from "../drizzle/schema";
 import { encryptSecret, hasSupplierEncryptionKey } from "./_core/secrets";
+import { localAuthConfigured } from "./_core/localAuth";
 
 const jsonOk = <T>(data: T, message = "Success") => ({ success: true, data, message, error: null });
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const money = (value: number) => Math.round(value);
+const backupKeyConfigured = () => Buffer.from(process.env.BACKUP_ENCRYPTION_KEY ?? "", "base64").length === 32;
 
 export const appRouter = router({
   system: systemRouter,
   auth: router({
-    me: publicProcedure.query(opts => opts.ctx.user),
+    me: publicProcedure.query(({ ctx }) => {
+      const user = ctx.user;
+      if (!user) return null;
+      return { id: user.id, openId: user.openId, name: user.name, email: user.email, loginMethod: user.loginMethod, role: user.role, createdAt: user.createdAt, updatedAt: user.updatedAt, lastSignedIn: user.lastSignedIn };
+    }),
     logout: publicProcedure.mutation(({ ctx }) => { const cookieOptions = getSessionCookieOptions(ctx.req); ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 }); return { success: true } as const; }),
   }),
   public: router({
@@ -102,7 +108,7 @@ export const appRouter = router({
         db.select({ status: webhookDeliveries.status, count: sql<number>`count(*)` }).from(webhookDeliveries).groupBy(webhookDeliveries.status),
         db.select({ status: suppliers.status, count: sql<number>`count(*)` }).from(suppliers).groupBy(suppliers.status),
       ]);
-      return jsonOk({ activations: activationCounts.map(row => ({ state: row.state, count: Number(row.count) })), pendingDeposits: Number(pendingDeposits[0]?.count ?? 0), webhookDeliveries: deliveryCounts.map(row => ({ status: row.status, count: Number(row.count) })), suppliers: supplierCounts.map(row => ({ status: row.status, count: Number(row.count) })), paymentWebhookConfigured: Boolean(process.env.QRIS_WEBHOOK_SECRET), supplierEncryptionConfigured: hasSupplierEncryptionKey() });
+      return jsonOk({ activations: activationCounts.map(row => ({ state: row.state, count: Number(row.count) })), pendingDeposits: Number(pendingDeposits[0]?.count ?? 0), webhookDeliveries: deliveryCounts.map(row => ({ status: row.status, count: Number(row.count) })), suppliers: supplierCounts.map(row => ({ status: row.status, count: Number(row.count) })), localEmailAuthConfigured: localAuthConfigured(), paymentWebhookConfigured: Boolean(process.env.QRIS_WEBHOOK_SECRET), supplierEncryptionConfigured: hasSupplierEncryptionKey(), backupConfigured: backupKeyConfigured() });
     }),
     saveSupplier: adminProcedure.input(z.object({ id: z.number().int().positive().optional(), name: z.string().min(2).max(100), apiUrl: z.string().url().max(255).optional().or(z.literal("")), apiKey: z.string().max(1000).optional(), priority: z.number().int().min(0).max(10000), timeoutMs: z.number().int().min(500).max(120000), status: z.enum(["active", "inactive", "degraded"]) })).mutation(async ({ input }) => {
       const db = await getDb(); if (!db) throw new Error("Database unavailable");

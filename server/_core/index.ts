@@ -10,6 +10,7 @@ import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { registerRestApi } from "../rest";
 import { ensureCatalog } from "../db";
+import { registerLocalAuthRoutes } from "./localAuth";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -32,12 +33,14 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 
 async function startServer() {
   const app = express();
+  app.set("trust proxy", Number(process.env.TRUST_PROXY_HOPS || 1));
   const server = createServer(app);
   await ensureCatalog();
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb", verify: (req, _res, buffer) => { (req as typeof req & { rawBody?: Buffer }).rawBody = Buffer.from(buffer); } }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
   registerStorageProxy(app);
+  registerLocalAuthRoutes(app);
   registerOAuthRoutes(app);
   registerRestApi(app);
   // tRPC API
