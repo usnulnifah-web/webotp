@@ -65,14 +65,22 @@ if [[ "$NODE_MAJOR" -lt 18 ]]; then
   exit 1
 fi
 
-if ! command -v pnpm >/dev/null 2>&1; then
-  command -v npm >/dev/null 2>&1 || { echo "ERROR: pnpm maupun npm tidak tersedia." >&2; exit 1; }
-  log "Memasang pnpm 10.4.1"
-  npm install --global pnpm@10.4.1
+PACKAGE_MANAGER=""
+if command -v pnpm >/dev/null 2>&1; then
+  PACKAGE_MANAGER="pnpm"
+elif command -v npm >/dev/null 2>&1; then
+  PACKAGE_MANAGER="npm"
+else
+  echo "ERROR: pnpm maupun npm tidak tersedia." >&2
+  exit 1
 fi
 
 log "Memasang dependency"
-pnpm install --frozen-lockfile
+if [[ "$PACKAGE_MANAGER" == "pnpm" ]]; then
+  pnpm install --frozen-lockfile
+else
+  npm install
+fi
 
 umask 077
 if [[ -f .env ]]; then
@@ -90,18 +98,18 @@ done
 
 if [[ "$SKIP_DB" -eq 0 ]]; then
   log "Menjalankan migrasi database"
-  pnpm db:push
+  if [[ "$PACKAGE_MANAGER" == "pnpm" ]]; then pnpm db:push; else npm run db:push; fi
 fi
 
 log "Membuat production build"
-pnpm build
+if [[ "$PACKAGE_MANAGER" == "pnpm" ]]; then pnpm build; else npm run build; fi
 
 cat > start-hosting.sh <<'START'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 export NODE_ENV=production
-exec pnpm start
+if command -v pnpm >/dev/null 2>&1; then exec pnpm start; else exec npm run start; fi
 START
 chmod 700 start-hosting.sh
 
@@ -114,7 +122,7 @@ HAS_SYSTEMD=0
 if [[ "$NO_SYSTEMD" -eq 0 && "$(id -u)" -eq 0 && "$(command -v systemctl || true)" ]]; then
   HAS_SYSTEMD=1
   log "Membuat service systemd: $SERVICE_NAME"
-  PNPM_BIN="$(command -v pnpm)"
+  if [[ "$PACKAGE_MANAGER" == "pnpm" ]]; then START_COMMAND="$(command -v pnpm) start"; else START_COMMAND="$(command -v npm) run start"; fi
   cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
 [Unit]
 Description=WebOTP Node.js service
@@ -125,7 +133,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=$APP_DIR
 EnvironmentFile=$APP_DIR/.env
-ExecStart=$PNPM_BIN start
+ExecStart=$START_COMMAND
 Restart=always
 RestartSec=5
 User=root
