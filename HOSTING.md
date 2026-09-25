@@ -6,6 +6,22 @@ Hosting harus menyediakan **Node.js 18 atau lebih baru**, npm, dan MySQL/TiDB. F
 
 ## Cara 1: VPS atau terminal hosting dengan Git
 
+### Autoinstall satu perintah
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/usnulnifah-web/webotp/main/autoinstall.sh -o autoinstall.sh
+chmod 700 autoinstall.sh
+export DATABASE_URL='mysql://USER:PASSWORD@HOST:3306/NAMA_DATABASE'
+export JWT_SECRET='ganti-dengan-rahasia-minimal-32-karakter'
+bash autoinstall.sh
+```
+
+Untuk shared hosting tanpa systemd, tambahkan `--no-systemd`:
+
+```bash
+bash autoinstall.sh --no-systemd --port 3000
+```
+
 ```bash
 git clone https://github.com/usnulnifah-web/webotp.git
 cd webotp

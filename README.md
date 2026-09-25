@@ -67,6 +67,20 @@ Every response follows:
 
 ## Local development
 
+### Production autoinstall
+
+For a public one-command bootstrap on a VPS or terminal hosting:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/usnulnifah-web/webotp/main/autoinstall.sh -o autoinstall.sh
+chmod 700 autoinstall.sh
+export DATABASE_URL='mysql://USER:PASSWORD@HOST:3306/DATABASE'
+export JWT_SECRET='replace-with-at-least-32-random-characters'
+bash autoinstall.sh
+```
+
+Use `bash autoinstall.sh --no-systemd --port 3000` on shared hosting.
+
 ```bash
 pnpm install
 pnpm db:push
