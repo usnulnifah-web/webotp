@@ -29,6 +29,25 @@ export const adminSessions = mysqlTable("admin_sessions", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
+export const adminLoginAttempts = mysqlTable("admin_login_attempts", {
+  id: int("id").autoincrement().primaryKey(),
+  username: varchar("username", { length: 80 }).notNull(),
+  ipAddress: varchar("ipAddress", { length: 64 }).notNull(),
+  failedCount: int("failedCount").default(0).notNull(),
+  lockedUntil: timestamp("lockedUntil"),
+  lastAttemptAt: timestamp("lastAttemptAt").defaultNow().notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => ({ identityIdx: uniqueIndex("admin_login_identity_idx").on(table.username, table.ipAddress) }));
+
+export const auditLogs = mysqlTable("audit_logs", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId"),
+  action: varchar("action", { length: 80 }).notNull(),
+  ipAddress: varchar("ipAddress", { length: 64 }),
+  metadata: text("metadata"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
 export const wallets = mysqlTable("wallets", {
   id: int("id").autoincrement().primaryKey(),
   userId: int("userId").notNull().unique(),

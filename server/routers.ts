@@ -6,40 +6,49 @@ import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { adminProcedure, protectedProcedure, publicProcedure, router } from "./_core/trpc";
-import { getDb, getWallet, getRecentWalletTransactions, getUserApiKeys, getUserWebhooks, getCatalog, getPublicStats, getUserActivations, countUserActivations, recordActivationEvent, ensureCatalog, hasAdminAccount, createAdminAccount, loginAdmin, deleteAdminSession } from "./db";
-import { apiKeys, activations, deposits, refunds, services, suppliers, walletTransactions, wallets, webhookDeliveries, webhookEndpoints } from "../drizzle/schema";
+import { getDb, getWallet, getRecentWalletTransactions, getUserApiKeys, getUserWebhooks, getCatalog, getPublicStats, getUserActivations, countUserActivations, recordActivationEvent, ensureCatalog, hasAdminAccount, createAdminAccount, loginAdmin, deleteAdminSession, getAdminLoginLock, recordAdminLoginFailure, clearAdminLoginFailures, changeAdminPassword, deleteAdminSessions, writeAuditLog } from "./db";
+import { auditLogs, apiKeys, activations, deposits, refunds, services, suppliers, walletTransactions, wallets, webhookDeliveries, webhookEndpoints } from "../drizzle/schema";
 
 const jsonOk = <T>(data: T, message = "Success") => ({ success: true, data, message, error: null });
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const money = (value: number) => Math.round(value);
+const clientIp = (req: { ip?: string; headers: Record<string, string | string[] | undefined> }) => req.ip || String(req.headers["x-forwarded-for"] ?? "unknown").split(",")[0].trim();
+export const adminPasswordSchema = z.string().regex(/^\d{6}$/);
+export const adminSetupInputSchema = z.object({ username: z.string().trim().min(3).max(80).regex(/^[a-zA-Z0-9_.-]+$/), password: adminPasswordSchema, confirmPassword: z.string() });
 
 export const appRouter = router({
   system: systemRouter,
   auth: router({
     me: publicProcedure.query(opts => opts.ctx.user),
-    logout: publicProcedure.mutation(async ({ ctx }) => { const cookieOptions = getSessionCookieOptions(ctx.req); const token = parseCookieHeader(ctx.req.headers.cookie ?? "")[COOKIE_NAME]; await deleteAdminSession(token); ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 }); return { success: true } as const; }),
+    logout: publicProcedure.mutation(async ({ ctx }) => { const cookieOptions = getSessionCookieOptions(ctx.req); const token = parseCookieHeader(ctx.req.headers.cookie ?? "")[COOKIE_NAME]; await deleteAdminSession(token); await writeAuditLog("admin.logout", { userId: ctx.user?.id, ipAddress: clientIp(ctx.req) }); ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 }); return { success: true } as const; }),
   }),
   setup: router({
     status: publicProcedure.query(async ({ ctx }) => jsonOk({ configured: await hasAdminAccount(), authenticated: Boolean(ctx.user), user: ctx.user ? { id: ctx.user.id, name: ctx.user.name, role: ctx.user.role } : null })),
-    createAdmin: publicProcedure.input(z.object({ username: z.string().trim().min(3).max(80).regex(/^[a-zA-Z0-9_.-]+$/), password: z.string().regex(/^\d{6}$/), confirmPassword: z.string() })).mutation(async ({ ctx, input }) => {
+    createAdmin: publicProcedure.input(adminSetupInputSchema).mutation(async ({ ctx, input }) => {
       if (input.password !== input.confirmPassword) throw new Error("Passwords do not match");
       const account = await createAdminAccount(input.username, input.password);
       const session = await loginAdmin(input.username, input.password);
       if (!session) throw new Error("Could not start admin session");
+      await writeAuditLog("admin.setup_completed", { userId: account.userId, ipAddress: clientIp(ctx.req), metadata: { username: account.username } });
       ctx.res.cookie(COOKIE_NAME, session.token, { ...getSessionCookieOptions(ctx.req), maxAge: 1000 * 60 * 60 * 24 * 30 });
       return jsonOk({ username: account.username }, "Admin account created");
     }),
-    login: publicProcedure.input(z.object({ username: z.string().trim().min(1).max(80), password: z.string().regex(/^\d{6}$/) })).mutation(async ({ ctx, input }) => {
+    login: publicProcedure.input(z.object({ username: z.string().trim().min(1).max(80), password: adminPasswordSchema })).mutation(async ({ ctx, input }) => {
       if (!(await hasAdminAccount())) throw new Error("Admin setup is required");
+      const ipAddress = clientIp(ctx.req);
+      const lockedSeconds = await getAdminLoginLock(input.username, ipAddress);
+      if (lockedSeconds > 0) throw new Error(`Too many attempts. Try again in ${Math.ceil(lockedSeconds / 60)} minute(s)`);
       const session = await loginAdmin(input.username, input.password);
-      if (!session) throw new Error("Invalid username or 6-digit password");
+      if (!session) { await recordAdminLoginFailure(input.username, ipAddress); await writeAuditLog("admin.login_failed", { ipAddress, metadata: { username: input.username } }); throw new Error("Invalid username or 6-digit password"); }
+      await clearAdminLoginFailures(input.username, ipAddress);
+      await writeAuditLog("admin.login_success", { userId: session.userId, ipAddress });
       ctx.res.cookie(COOKIE_NAME, session.token, { ...getSessionCookieOptions(ctx.req), maxAge: 1000 * 60 * 60 * 24 * 30 });
       return jsonOk({ username: session.username }, "Login successful");
     }),
   }),
   public: router({
-    stats: publicProcedure.query(async () => jsonOk(await getPublicStats())),
-    catalog: publicProcedure.query(async () => jsonOk(await getCatalog())),
+    stats: publicProcedure.query(async () => { if (!(await hasAdminAccount())) throw new Error("Admin setup required"); return jsonOk(await getPublicStats()); }),
+    catalog: publicProcedure.query(async () => { if (!(await hasAdminAccount())) throw new Error("Admin setup required"); return jsonOk(await getCatalog()); }),
   }),
   wallet: router({
     createDeposit: protectedProcedure.input(z.object({ amountMinor: z.number().int().min(10000).max(10000000) })).mutation(async ({ ctx, input }) => {
@@ -102,6 +111,15 @@ export const appRouter = router({
   }),
   admin: router({
     overview: adminProcedure.query(async () => jsonOk({ router: "SupplierRouter active", supportedStates: ["CREATED", "RESERVED", "PENDING", "OTP_RECEIVED", "SUCCESS", "CANCELLED", "TIMEOUT", "REFUND"], pricing: "Database-driven", ledger: "Enabled" })),
+    changePassword: adminProcedure.input(z.object({ currentPassword: adminPasswordSchema, newPassword: adminPasswordSchema, confirmPassword: z.string() })).mutation(async ({ ctx, input }) => {
+      if (input.newPassword !== input.confirmPassword) throw new Error("Passwords do not match");
+      const changed = await changeAdminPassword(ctx.user.id, input.currentPassword, input.newPassword);
+      if (!changed) { await writeAuditLog("admin.password_change_failed", { userId: ctx.user.id, ipAddress: clientIp(ctx.req) }); throw new Error("Current password is invalid"); }
+      await writeAuditLog("admin.password_changed", { userId: ctx.user.id, ipAddress: clientIp(ctx.req) });
+      return jsonOk(null, "Password changed. Please login again.");
+    }),
+    logoutAllSessions: adminProcedure.mutation(async ({ ctx }) => { await deleteAdminSessions(ctx.user.id); await writeAuditLog("admin.sessions_revoked", { userId: ctx.user.id, ipAddress: clientIp(ctx.req) }); return jsonOk(null, "All sessions revoked"); }),
+    auditLog: adminProcedure.query(async () => { const db = await getDb(); if (!db) throw new Error("Database unavailable"); return jsonOk(await db.select().from(auditLogs).orderBy(desc(auditLogs.createdAt)).limit(100)); }),
   }),
 });
 export type AppRouter = typeof appRouter;

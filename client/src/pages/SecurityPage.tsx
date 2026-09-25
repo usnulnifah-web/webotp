@@ -1,0 +1,18 @@
+import { useState } from "react";
+import { LockKeyhole, ShieldCheck } from "lucide-react";
+import { toast } from "sonner";
+import { trpc } from "@/lib/trpc";
+
+const formatDate = (value: Date | string | null | undefined) => value ? new Date(value).toLocaleString("id-ID", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";
+
+export default function SecurityPage({ onLogout }: { onLogout: () => void }) {
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const audit = trpc.admin.auditLog.useQuery(undefined);
+  const change = trpc.admin.changePassword.useMutation({ onSuccess: () => { toast.success("Password changed. Login again."); onLogout(); }, onError: error => toast.error(error.message) });
+  const revoke = trpc.admin.logoutAllSessions.useMutation({ onSuccess: () => { toast.success("All sessions revoked"); onLogout(); } });
+  const submit = (event: React.FormEvent) => { event.preventDefault(); change.mutate({ currentPassword, newPassword, confirmPassword }); };
+  const numeric = (value: string) => value.replace(/\D/g, "").slice(0, 6);
+  return <div className="space-y-7"><div><p className="section-kicker">Admin controls</p><h2 className="mt-2 text-3xl font-black tracking-tight">Security.</h2><p className="mt-2 text-slate-500">Password changes revoke all active sessions. Login is temporarily locked after five failed attempts.</p></div><div className="grid gap-6 lg:grid-cols-2"><div className="panel p-6"><h3 className="font-black">Change 6-digit password</h3><form onSubmit={submit} className="mt-5 space-y-3"><input className="input w-full tracking-[.4em]" type="password" inputMode="numeric" maxLength={6} placeholder="Current password" value={currentPassword} onChange={e => setCurrentPassword(numeric(e.target.value))} required /><input className="input w-full tracking-[.4em]" type="password" inputMode="numeric" maxLength={6} placeholder="New password" value={newPassword} onChange={e => setNewPassword(numeric(e.target.value))} required /><input className="input w-full tracking-[.4em]" type="password" inputMode="numeric" maxLength={6} placeholder="Repeat new password" value={confirmPassword} onChange={e => setConfirmPassword(numeric(e.target.value))} required /><button className="btn-primary mt-2" disabled={change.isPending || newPassword.length !== 6 || confirmPassword.length !== 6}><LockKeyhole size={16} /> Change password</button></form></div><div className="panel p-6"><h3 className="font-black">Active sessions</h3><p className="mt-2 text-sm leading-6 text-slate-500">Revoke every admin session if you suspect that a device or browser is compromised.</p><button className="btn-danger mt-5" onClick={() => revoke.mutate()} disabled={revoke.isPending}><ShieldCheck size={16} /> Revoke all sessions</button></div></div><div className="panel overflow-hidden"><div className="panel-head"><div><h3 className="font-black">Audit log</h3><p className="mt-1 text-xs text-slate-400">Recent security activity for this admin account.</p></div></div><div className="overflow-x-auto"><table className="data-table"><thead><tr><th>Action</th><th>IP</th><th>Time</th></tr></thead><tbody>{(audit.data?.data ?? []).map(item => <tr key={item.id}><td className="font-mono text-xs">{item.action}</td><td>{item.ipAddress || "—"}</td><td>{formatDate(item.createdAt)}</td></tr>)}{!audit.data?.data?.length && <tr><td colSpan={3} className="py-10 text-center text-slate-400">No audit records yet.</td></tr>}</tbody></table></div></div></div>;
+}

@@ -1,7 +1,7 @@
 import type { Express, Request, Response } from "express";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { createHash, randomBytes } from "node:crypto";
-import { getDb, getCatalog, getWallet, recordActivationEvent } from "./db";
+import { getDb, getCatalog, getWallet, recordActivationEvent, hasAdminAccount } from "./db";
 import { apiKeys, activations, services, wallets, walletTransactions, refunds } from "../drizzle/schema";
 
 const reply = (res: Response, status: number, data: unknown, message = "Success", error: unknown = null) => res.status(status).json({ success: status < 400, data: status < 400 ? data : null, message, error });
@@ -16,10 +16,11 @@ async function authenticate(req: Request, res: Response) {
 }
 
 export function registerRestApi(app: Express) {
-  app.get("/api/v1/services", async (_req, res) => reply(res, 200, await getCatalog()));
-  app.get("/api/v1/countries", async (_req, res) => { const catalog = await getCatalog(); reply(res, 200, Array.from(new Map(catalog.map(item => [item.countryCode, { code: item.countryCode, name: item.countryName }])).values())); });
-  app.get("/api/v1/prices", async (_req, res) => reply(res, 200, (await getCatalog()).map(item => ({ service: item.code, country: item.countryCode, price: item.apiPriceMinor }))));
-  app.get("/api/v1/availability", async (_req, res) => reply(res, 200, (await getCatalog()).map(item => ({ service: item.code, country: item.countryCode, stock: item.stock, availability: item.availability }))));
+  const requireSetup = async (res: Response) => { if (await hasAdminAccount()) return true; reply(res, 503, null, "Admin setup required", { code: "ADMIN_SETUP_REQUIRED" }); return false; };
+  app.get("/api/v1/services", async (_req, res) => { if (!(await requireSetup(res))) return; reply(res, 200, await getCatalog()); });
+  app.get("/api/v1/countries", async (_req, res) => { if (!(await requireSetup(res))) return; const catalog = await getCatalog(); reply(res, 200, Array.from(new Map(catalog.map(item => [item.countryCode, { code: item.countryCode, name: item.countryName }])).values())); });
+  app.get("/api/v1/prices", async (_req, res) => { if (!(await requireSetup(res))) return; reply(res, 200, (await getCatalog()).map(item => ({ service: item.code, country: item.countryCode, price: item.apiPriceMinor }))); });
+  app.get("/api/v1/availability", async (_req, res) => { if (!(await requireSetup(res))) return; reply(res, 200, (await getCatalog()).map(item => ({ service: item.code, country: item.countryCode, stock: item.stock, availability: item.availability }))); });
   app.get("/api/v1/balance", async (req, res) => { const key = await authenticate(req, res); if (!key) return; reply(res, 200, await getWallet(key.userId)); });
   app.get("/api/v1/account", async (req, res) => { const key = await authenticate(req, res); if (!key) return; reply(res, 200, { keyPrefix: key.keyPrefix, rateLimitPerMinute: key.rateLimitPerMinute, requestCount: key.requestCount }); });
   app.get("/api/v1/history", async (req, res) => { const key = await authenticate(req, res); if (!key) return; const db = await getDb(); if (!db) return reply(res, 503, null, "Database unavailable"); reply(res, 200, await db.select().from(activations).where(eq(activations.userId, key.userId)).orderBy(desc(activations.createdAt)).limit(100)); });

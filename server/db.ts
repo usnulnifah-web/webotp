@@ -2,7 +2,7 @@ import { and, desc, eq, gt, sql } from "drizzle-orm";
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { drizzle } from "drizzle-orm/mysql2";
 import { ENV } from "./_core/env";
-import { adminAccounts, adminSessions, users, wallets, walletTransactions, apiKeys, webhookEndpoints, services, suppliers, activations, activationEvents, type InsertUser } from "../drizzle/schema";
+import { adminAccounts, adminLoginAttempts, adminSessions, auditLogs, users, wallets, walletTransactions, apiKeys, webhookEndpoints, services, suppliers, activations, activationEvents, type InsertUser } from "../drizzle/schema";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 export async function getDb() {
@@ -35,6 +35,7 @@ const verifyAdminPassword = (password: string, stored: string) => {
   try { return timingSafeEqual(Buffer.from(digest, "hex"), scryptSync(password, salt, 32)); } catch { return false; }
 };
 const hashAdminSession = (token: string) => createHash("sha256").update(token).digest("hex");
+const normalizeAdminIdentity = (username: string) => username.trim().toLowerCase();
 
 export async function hasAdminAccount() {
   const db = await getDb(); if (!db) return false;
@@ -45,25 +46,68 @@ export async function hasAdminAccount() {
 export async function createAdminAccount(username: string, password: string) {
   const db = await getDb(); if (!db) throw new Error("Database unavailable");
   if (await hasAdminAccount()) throw new Error("Admin account already exists");
+  const normalizedUsername = normalizeAdminIdentity(username);
   const existing = await db.select().from(users).where(eq(users.openId, ADMIN_OPEN_ID)).limit(1);
   let userId = existing[0]?.id;
   if (!userId) {
-    const inserted = await db.insert(users).values({ openId: ADMIN_OPEN_ID, name: username, loginMethod: "local", role: "admin" });
+    const inserted = await db.insert(users).values({ openId: ADMIN_OPEN_ID, name: normalizedUsername, loginMethod: "local", role: "admin" });
     userId = Number((inserted as any).insertId);
   } else {
-    await db.update(users).set({ name: username, role: "admin", loginMethod: "local" }).where(eq(users.id, userId));
+    await db.update(users).set({ name: normalizedUsername, role: "admin", loginMethod: "local" }).where(eq(users.id, userId));
   }
-  await db.insert(adminAccounts).values({ userId, username, passwordHash: hashAdminPassword(password) });
-  return { userId, username };
+  await db.insert(adminAccounts).values({ userId, username: normalizedUsername, passwordHash: hashAdminPassword(password) });
+  return { userId, username: normalizedUsername };
 }
 
 export async function loginAdmin(username: string, password: string) {
   const db = await getDb(); if (!db) throw new Error("Database unavailable");
-  const account = (await db.select().from(adminAccounts).where(eq(adminAccounts.username, username)).limit(1))[0];
+  const account = (await db.select().from(adminAccounts).where(eq(adminAccounts.username, normalizeAdminIdentity(username))).limit(1))[0];
   if (!account || !verifyAdminPassword(password, account.passwordHash)) return null;
   const token = randomBytes(32).toString("base64url");
   await db.insert(adminSessions).values({ userId: account.userId, tokenHash: hashAdminSession(token), expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 24 * 30) });
   return { token, userId: account.userId, username: account.username };
+}
+
+export async function getAdminLoginLock(username: string, ipAddress: string) {
+  const db = await getDb(); if (!db) return 0;
+  const row = (await db.select().from(adminLoginAttempts).where(and(eq(adminLoginAttempts.username, normalizeAdminIdentity(username)), eq(adminLoginAttempts.ipAddress, ipAddress))).limit(1))[0];
+  if (!row?.lockedUntil) return 0;
+  const remaining = row.lockedUntil.getTime() - Date.now();
+  return remaining > 0 ? Math.ceil(remaining / 1000) : 0;
+}
+
+export async function recordAdminLoginFailure(username: string, ipAddress: string) {
+  const db = await getDb(); if (!db) return;
+  const identity = normalizeAdminIdentity(username);
+  const existing = (await db.select().from(adminLoginAttempts).where(and(eq(adminLoginAttempts.username, identity), eq(adminLoginAttempts.ipAddress, ipAddress))).limit(1))[0];
+  const failedCount = (existing?.failedCount ?? 0) + 1;
+  const lockedUntil = failedCount >= 5 ? new Date(Date.now() + 15 * 60 * 1000) : null;
+  if (existing) await db.update(adminLoginAttempts).set({ failedCount, lockedUntil, lastAttemptAt: new Date() }).where(eq(adminLoginAttempts.id, existing.id));
+  else await db.insert(adminLoginAttempts).values({ username: identity, ipAddress, failedCount, lockedUntil, lastAttemptAt: new Date() });
+}
+
+export async function clearAdminLoginFailures(username: string, ipAddress: string) {
+  const db = await getDb(); if (!db) return;
+  await db.delete(adminLoginAttempts).where(and(eq(adminLoginAttempts.username, normalizeAdminIdentity(username)), eq(adminLoginAttempts.ipAddress, ipAddress)));
+}
+
+export async function changeAdminPassword(userId: number, currentPassword: string, newPassword: string) {
+  const db = await getDb(); if (!db) throw new Error("Database unavailable");
+  const account = (await db.select().from(adminAccounts).where(eq(adminAccounts.userId, userId)).limit(1))[0];
+  if (!account || !verifyAdminPassword(currentPassword, account.passwordHash)) return false;
+  await db.update(adminAccounts).set({ passwordHash: hashAdminPassword(newPassword) }).where(eq(adminAccounts.id, account.id));
+  await db.delete(adminSessions).where(eq(adminSessions.userId, userId));
+  return true;
+}
+
+export async function deleteAdminSessions(userId: number) {
+  const db = await getDb(); if (!db) throw new Error("Database unavailable");
+  await db.delete(adminSessions).where(eq(adminSessions.userId, userId));
+}
+
+export async function writeAuditLog(action: string, options: { userId?: number | null; ipAddress?: string | null; metadata?: unknown } = {}) {
+  const db = await getDb(); if (!db) return;
+  await db.insert(auditLogs).values({ userId: options.userId ?? null, action, ipAddress: options.ipAddress ?? null, metadata: options.metadata === undefined ? null : JSON.stringify(options.metadata) });
 }
 
 export async function getAdminBySessionToken(token: string | undefined) {

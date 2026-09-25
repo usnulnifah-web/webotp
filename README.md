@@ -79,6 +79,20 @@ After the database migration, open the web address. The application first shows 
 
 The original OAuth session flow and API-key authentication remain available for existing integrations. The local admin session is an additional installation gate for the web interface.
 
+### Security and operations
+
+Admin login is rate-limited with a 15-minute lockout after five failed attempts. Administrators can change the six-digit password, revoke all active sessions, and review security audit events from **Security** in the dashboard. State-changing tRPC requests require a double-submit CSRF token; API-key REST requests do not use cookie authentication and therefore do not require a CSRF token.
+
+The service exposes `GET /health` for liveness and `GET /ready` for database readiness. Public catalog REST and tRPC endpoints remain locked with `ADMIN_SETUP_REQUIRED` until the first admin account exists. Once setup is complete, they are available as documented above.
+
+Create a MySQL dump with the included command. Store the resulting file outside the repository and in a protected backup location:
+
+```bash
+pnpm db:backup
+```
+
+The command reads `DATABASE_URL`, writes a timestamped dump under `backups/`, and excludes that directory from Git. It is intentionally run by the deployment scheduler or backup system rather than by an unauthenticated web request.
+
 Checks:
 
 ```bash
