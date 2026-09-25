@@ -1,0 +1,15 @@
+<?php
+declare(strict_types=1);
+
+// Salin file ini menjadi config.php, lalu sesuaikan nilainya.
+const SITE_NAME = 'WebOTP';
+const SITE_TAGLINE = 'Layanan nomor virtual dan OTP untuk kebutuhan aplikasi Anda';
+const ADMIN_WHATSAPP = '6281234567890'; // format internasional tanpa tanda +
+const CURRENCY = 'Rp';
+
+// Daftar paket yang tampil di halaman jualan.
+const PACKAGES = [
+    ['name' => 'OTP Basic', 'price' => 5000, 'description' => '1 nomor, masa aktif 10 menit'],
+    ['name' => 'OTP Standard', 'price' => 10000, 'description' => '1 nomor, masa aktif 20 menit'],
+    ['name' => 'OTP Premium', 'price' => 25000, 'description' => 'Prioritas layanan dan masa aktif lebih lama'],
+];
