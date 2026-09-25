@@ -105,6 +105,11 @@ exec pnpm start
 START
 chmod 700 start-hosting.sh
 
+cat > start-hosting.js <<'STARTJS'
+import "./dist/index.js";
+STARTJS
+chmod 700 start-hosting.js
+
 HAS_SYSTEMD=0
 if [[ "$NO_SYSTEMD" -eq 0 && "$(id -u)" -eq 0 && "$(command -v systemctl || true)" ]]; then
   HAS_SYSTEMD=1

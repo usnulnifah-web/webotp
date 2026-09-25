@@ -33,11 +33,11 @@ bash install.sh --no-systemd --port 3000
 5. Di cPanel/Plesk/DirectAdmin, buat **Node.js Application** dengan:
    - Node.js: 18+
    - Application root: folder upload tadi
-   - Startup file: `start-hosting.sh`
+   - Startup file: `start-hosting.js`
    - Application URL/port: port yang diberikan panel hosting
    - Environment variables: `DATABASE_URL`, `JWT_SECRET`, dan `PORT`
 
-Pada shared hosting, jangan menjalankan `pnpm dev`; gunakan `start-hosting.sh` atau tombol Restart pada Node.js Application panel.
+Pada shared hosting, jangan menjalankan `pnpm dev`; gunakan `start-hosting.js` sebagai startup file Node.js, atau `start-hosting.sh` dari Terminal.
 
 ## Pemeriksaan
 
